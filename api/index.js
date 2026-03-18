@@ -171,4 +171,6 @@ app.post("/agent", async (req, res) => {
   res.json({ reply, user_id: userId });
 });
 
-module.exports = app;
+module.exports = (req, res) => {
+  app(req, res);
+};
