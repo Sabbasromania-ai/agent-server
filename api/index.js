@@ -1,42 +1,32 @@
 
-const express = require("express");
 const axios = require("axios");
 const { createClient } = require("@supabase/supabase-js");
 
-const app = express();
-app.use(express.json());
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// 🔹 Create or get user
 async function getOrCreateUser(email) {
-  const { data: existing, error } = await supabase
+  const { data: existing } = await supabase
     .from("users")
     .select("id")
     .eq("email", email)
     .maybeSingle();
 
-  if (error) throw error;
   if (existing) return existing.id;
 
-  const { data, error: insertError } = await supabase
+  const { data } = await supabase
     .from("users")
     .insert({ email })
     .select("id")
     .single();
 
-  if (insertError) throw insertError;
-
   return data.id;
 }
 
-// 🔹 Parse weight (STRICT)
 function parseWeight(message) {
-  const match = message.match(/(\d+(?:\.\d+)?)\s*(kg|lbs?|κιλά)/i);
+  const match = message.match(/(\d+(?:\.\d+)?)\s*(kg|lbs?)/i);
   if (!match) return null;
 
   return {
@@ -45,132 +35,48 @@ function parseWeight(message) {
   };
 }
 
-// 🔹 Blood markers
-const BLOOD_MARKERS = [
-  "glucose",
-  "hba1c",
-  "cholesterol",
-  "triglycerides",
-  "hdl",
-  "ldl"
-];
-
-// 🔹 Parse blood test
-function parseBloodTest(message) {
-  const lower = message.toLowerCase();
-
-  for (const marker of BLOOD_MARKERS) {
-    if (lower.includes(marker)) {
-      const valueMatch = message.match(/(\d+(?:\.\d+)?)/);
-      const unitMatch = message.match(/(mg\/dl|mmol\/l|%)/i);
-
-      if (valueMatch) {
-        return {
-          test_name: marker,
-          value: parseFloat(valueMatch[1]),
-          unit: unitMatch ? unitMatch[1] : null
-        };
-      }
-    }
+module.exports = async (req, res) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
-
-  return null;
-}
-
-app.post("/agent", async (req, res) => {
-  const { message, email } = req.body;
-
-  if (!message || !email) {
-    return res.status(400).json({ error: "message and email required" });
-  }
-
-  let userId;
 
   try {
-    userId = await getOrCreateUser(email);
-  } catch (err) {
-    console.log("USER ERROR:", err);
-    return res.status(500).json({ error: "User error" });
-  }
+    const { message, email } = req.body;
 
-  // 🔥 1. BLOOD TEST FIRST
-  const blood = parseBloodTest(message);
+    const userId = await getOrCreateUser(email);
 
-  if (blood) {
-    console.log("BLOOD DETECTED:", blood);
+    const weight = parseWeight(message);
 
-    const { error } = await supabase.from("blood_tests").insert({
-      user_id: userId,
-      test_name: blood.test_name,
-      value: blood.value,
-      unit: blood.unit,
-      timestamp: new Date().toISOString()
-    });
-
-    if (error) {
-      console.log("BLOOD ERROR:", error);
-    } else {
-      console.log("BLOOD SUCCESS");
+    if (weight) {
+      await supabase.from("weight_logs").insert({
+        user_id: userId,
+        value: weight.value,
+        unit: weight.unit,
+        timestamp: new Date().toISOString()
+      });
     }
-  }
 
-  // 🔥 2. WEIGHT AFTER
-  const weight = parseWeight(message);
-
-  if (weight && !blood) {
-    console.log("WEIGHT DETECTED:", weight);
-
-    const now = new Date().toISOString();
-
-    const { error } = await supabase.from("weight_logs").insert({
-      user_id: userId,
-      value: weight.value,
-      unit: weight.unit,
-      timestamp: now,
-      updated_at: now
-    });
-
-    if (error) {
-      console.log("WEIGHT ERROR:", error);
-    } else {
-      console.log("WEIGHT SUCCESS");
-    }
-  }
-
-  // 🔹 Claude call
-  let reply = "";
-
-  try {
-    const response = await axios.post(
+    const ai = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
         model: "claude-sonnet-4-6",
-        max_tokens: 300,
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: message }]
-          }
-        ]
+        max_tokens: 200,
+        messages: [{ role: "user", content: message }]
       },
       {
         headers: {
-          "x-api-key": ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json"
+          "x-api-key": process.env.ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01"
         }
       }
     );
 
-    reply = response.data.content?.[0]?.text || "";
+    res.json({
+      reply: ai.data.content?.[0]?.text || "",
+      user_id: userId
+    });
   } catch (err) {
-    console.log("CLAUDE ERROR:", err.response?.data || err.message);
-    return res.status(500).json({ error: "Claude API failed" });
+    console.log(err);
+    res.status(500).json({ error: err.message });
   }
-
-  res.json({ reply, user_id: userId });
-});
-
-module.exports = (req, res) => {
-  app(req, res);
 };
