@@ -172,6 +172,4 @@ app.post("/agent", async (req, res) => {
   res.json({ reply, user_id: userId });
 });
 
-app.listen(3000, () => {
-  console.log("Agent running on http://localhost:3000");
-});
+module.exports = app;
