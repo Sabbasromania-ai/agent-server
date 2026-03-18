@@ -41,7 +41,9 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { message, email } = req.body;
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+
+    const { message, email } = body;
 
     const userId = await getOrCreateUser(email);
 
